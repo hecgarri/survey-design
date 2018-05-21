@@ -7,6 +7,7 @@ rm(list=ls())
 if (!require(foreign)) install.packages("foreign"); require(foreign) # Para importar conjuntos de datos en múltiples formatos 
 if (!require(dplyr)) install.packages("dplyr"); require(dplyr) # Para manipular objetos de tipo data frame
 if (!require(survey)) install.packages("survey"); require(survey) # Para trabajar muestras complejas 
+if (!require(sampling)) install.packages("sampling"); require(sampling)
 
 path = file.path("/home/hector/GoogleDriveUBB",
                  "OLR Ñuble - Observatorio laboral de Ñuble",
@@ -61,7 +62,10 @@ manzanas_grupo = datos %>% group_by(grupo,Portafolios) %>%
 
 datos = left_join(datos, manzanas_grupo)
 
-## Marco de manzanas 
+###########################
+### Marco de manzanas 
+###########################
+
 manzanas = datos %>% filter(!duplicated(Portafolios)) %>% 
            mutate(W = M*N)
 
@@ -70,25 +74,76 @@ grupos = manzanas %>% filter(!duplicated(grupo)) %>%
 
 manzanas = left_join(manzanas, grupos) %>% filter(grupo!=0)
 
-set.seed(1234)
 
-muestra = 80
+
+# con un 3% de error muestral, el tamaño es 2280 encuestas.  
+# con un 5% de error muestral, el tamño es de 845 encuestas
+
+set.seed(123)
+n_size = 845
+id_manzana = NULL
+total_viviendas = NULL
 grupo = NULL
-total = NULL
-manzana = NULL
-conjunto = NULL
 total = 0
 i = 1
-while(total < muestra){
+while(total <= n_size){
 grupo[i] = grupos[sample(nrow(grupos),size = 1,prob = grupos$P),c("grupo")]
-conjunto[[i]] = manzanas[manzanas$grupo==grupo[i],] %>% sample_n(size=1)
-muestra[i] = conjunto[[i]]$total_viviendas
-total = sum(muestra[i])
-i=i+1
-print(total)
+total_viviendas = manzanas[manzanas$grupo==grupo[i],] %>% 
+                      sample_n(size=1) %>% 
+                            select(total_viviendas) %>% as.numeric()
+id_manzana[i] = manzanas[manzanas$grupo==grupo[i],] %>%
+                    sample_n(size=1) %>% 
+                            select(Portafolios) %>% as.numeric() 
+manzanas = manzanas[manzanas$Portafolios!=id_manzana[i],] 
+total = total+round(total_viviendas*0.25,0)
+i = i+1
+print(i)
 }
 
+# Vuelvo a trabajar con las manzanas originales
+manzanas = datos %>% filter(!duplicated(Portafolios)) %>% 
+  mutate(W = M*N)
 
-repeat{
-  i = i+1
-}
+muestra = manzanas %>% mutate(Portafolios = as.numeric(Portafolios)) %>% 
+                                filter(Portafolios %in% id_manzana) %>% 
+                       mutate(samp_houses = round(total_viviendas*0.25,0)) %>% 
+                    select(Portafolios, Comuna, Area, Distrito, Zona,
+                           Manzana, Sector, samp_houses)
+
+total_SSU = sum(muestra$samp_houses) # Total de viviendas. 
+total_PSU = dim(muestra)[1] # Total de manzanas 
+
+desc_houses = summary(muestra$samp_houses)
+
+##########################################
+# Calculo de factores de expansión 
+##########################################
+
+# Voy a determinar la probabilidad de selección empírica
+# de selección de las manzanas a través de un bootstrap. 
+
+set.seed(123)
+sample_ = NULL
+for (i in 1:2000){
+sample_[[i]] = manzanas %>% sample_n(total_PSU) %>% select(Portafolios) %>% 
+  mutate(iter = i, include = Portafolios %in% id_manzana)
+}  
+
+sample_ = do.call(rbind, sample_)  %>% filter(include==TRUE)
+
+probs = sample_ %>% group_by(Portafolios) %>% count() %>% 
+  mutate(probability = n/2000, weights = 1/probability)
+
+######
+# Población representada
+
+poblacion = sum(probs$weights)
+
+# Distribución de los pesos de los conglomerados 
+boxplot(probs$weights)
+
+# Corrección por estimacion 
+
+R = nrow(manzanas)/poblacion
+
+probs = probs %>% mutate(weights_c = weights*R)
